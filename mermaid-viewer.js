@@ -41,9 +41,22 @@
     const mermaidUrl = chrome.runtime.getURL('vendors/mermaid.min.js');
     const pageUrl    = chrome.runtime.getURL('mermaid-page.js');
 
+    // ─── Icon tinting ─────────────────────────────────────────────────────────
+
+    // Fetch icon.svg, tint to Mermaid Live brand pink, and store in the shared
+    // DOM so mermaid-page.js can read it synchronously from the page context.
+    const iconReady = fetch(chrome.runtime.getURL('assets/icon.svg'))
+        .then(r => r.text())
+        .then(svg => {
+            document.documentElement.dataset.mermaidIconSvg =
+                svg.replace(/<rect\b([^>]*?)fill="[^"]*"/, '<rect$1fill="#FF3670"');
+        });
+
     // ─── Injection sequence ───────────────────────────────────────────────────
 
-    // Load Mermaid first; only inject our viewer logic once Mermaid is ready
-    injectScript(mermaidUrl, () => injectScript(pageUrl));
+    // Load Mermaid first; inject our viewer only once both Mermaid and the icon are ready.
+    injectScript(mermaidUrl, () => {
+        iconReady.then(() => injectScript(pageUrl));
+    });
 
 })();
