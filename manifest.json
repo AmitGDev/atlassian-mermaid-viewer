@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Atlassian Mermaid Viewer",
+  "version": "1.0.0",
+  "description": "Renders Mermaid diagrams in Confluence and Jira, with quick actions to open in Mermaid Live Editor and copy diagram source code.",
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "action": {
+    "default_title": "Atlassian Mermaid Viewer",
+    "default_icon": {
+      "16":  "icons/icon16.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.atlassian.net/wiki/*",
+        "https://*.atlassian.net/browse/*",
+        "https://*.atlassian.net/jira/*"
+      ],
+      "js": ["mermaid-viewer.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["vendors/mermaid.min.js", "assets/icon.svg", "mermaid-page.js"],
+      "matches": ["https://*.atlassian.net/*"]
+    }
+  ]
+}
