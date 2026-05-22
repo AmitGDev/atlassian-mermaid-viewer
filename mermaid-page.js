@@ -232,130 +232,335 @@
      * @returns {HTMLElement} The toolbar div, ready to be appended.
      */
     function createToolbar(codeText) {
-            const toolbar = document.createElement('div');
-            toolbar.className = 'mermaid-toolbar';
+        const toolbar = document.createElement('div');
+        toolbar.className = 'mermaid-toolbar';
 
-            // Left: Open in Mermaid Live
-            const liveBtn = document.createElement('button');
-            liveBtn.title = 'Open in Mermaid Live';
-            liveBtn.innerHTML = SVG_MERMAID;
-            liveBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                openInMermaidLive(codeText);
+        // Left: Open in Mermaid Live
+        const liveBtn = document.createElement('button');
+        liveBtn.title = 'Open in Mermaid Live';
+        liveBtn.innerHTML = SVG_MERMAID;
+        liveBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openInMermaidLive(codeText);
+        });
+
+        // Right: Copy code
+        const copyBtn = document.createElement('button');
+        copyBtn.title = 'Copy code';
+        copyBtn.innerHTML = SVG_COPY;
+        copyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(codeText).then(() => {
+                copyBtn.innerHTML = SVG_CHECK;
+                setTimeout(() => { copyBtn.innerHTML = SVG_COPY; }, 1500);
             });
+        });
 
-            // Right: Copy code
-            const copyBtn = document.createElement('button');
-            copyBtn.title = 'Copy code';
-            copyBtn.innerHTML = SVG_COPY;
-            copyBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                navigator.clipboard.writeText(codeText).then(() => {
-                    copyBtn.innerHTML = SVG_CHECK;
-                    setTimeout(() => { copyBtn.innerHTML = SVG_COPY; }, 1500);
-                });
-            });
+        toolbar.appendChild(liveBtn);
+        toolbar.appendChild(copyBtn);
+        return toolbar;
+    }
 
-            toolbar.appendChild(liveBtn);
-            toolbar.appendChild(copyBtn);
-            return toolbar;
+    // ─── Render cache ─────────────────────────────────────────────────────────
+
+    /**
+     * Caches rendered SVG strings keyed by diagram source.
+     * Prevents redundant Mermaid parse/render cycles for identical diagrams,
+     * which is common during Confluence SPA navigation (same diagrams reload).
+     *
+     * Eviction: oldest-first when the cache reaches RENDER_CACHE_MAX entries.
+     * Map preserves insertion order, so keys().next() always yields the oldest key.
+     */
+    const RENDER_CACHE_MAX = 100;
+    const renderCache = new Map();
+
+    // ─── SVG insertion ────────────────────────────────────────────────────────
+
+    /**
+     * Parses an SVG string safely via DOMParser and inserts it into the container.
+     *
+     * Why DOMParser instead of innerHTML:
+     *  - Parses as XML (image/svg+xml), avoiding HTML parser ambiguities.
+     *  - Produces a deterministic DOM structure with no phantom text nodes.
+     *  - DOMParser signals malformed input via a <parsererror> root - detectable
+     *    and catchable, unlike innerHTML which silently mangles bad markup.
+     *
+     * document.adoptNode() transfers the SVG element from the DOMParser's
+     * detached document into the page document before insertion, making
+     * ownership explicit and avoiding cross-document reference edge cases.
+     *
+     * SVG sizing corrections (Mermaid v11):
+     *  - Remove height attribute: lets CSS control height via aspect ratio.
+     *  - Promote inline max-width to a width attribute: CSS max-width:100% then
+     *    only clips diagrams that genuinely overflow - small diagrams render at
+     *    their natural size rather than stretching to fill the container.
+     *
+     * @param {string}      svgString - Raw SVG markup from mermaid.render().
+     * @param {HTMLElement} container - The .mermaid-content div to insert into.
+     * @throws {Error} If DOMParser signals a parse error.
+     */
+    function insertSvg(svgString, container) {
+        const parser = new DOMParser();
+        const doc    = parser.parseFromString(svgString, 'image/svg+xml');
+        const svgEl  = doc.documentElement;
+
+        // DOMParser surfaces XML parse errors as a <parsererror> root element
+        // rather than throwing - detect and re-throw so createPanel can catch it.
+        if (svgEl.tagName === 'parsererror') {
+            throw new Error('Mermaid returned malformed SVG: ' + svgEl.textContent);
         }
+
+        document.adoptNode(svgEl);
+
+        // SVG sizing corrections (see JSDoc above)
+        svgEl.removeAttribute('height');
+        const naturalMaxWidth = svgEl.style.maxWidth;
+        if (naturalMaxWidth) {
+            svgEl.setAttribute('width', naturalMaxWidth);
+            svgEl.style.removeProperty('max-width');
+        }
+
+        // replaceChildren: atomic, produces no phantom text nodes, no need
+        // for post-insertion cleanup.
+        container.replaceChildren(svgEl);
+    }
 
     // ─── Panel creation ───────────────────────────────────────────────────────
 
     /**
      * Renders the Mermaid diagram into the given container and attaches the toolbar.
      * Shows a "Rendering…" placeholder while mermaid.render() is in flight.
-     * On success, corrects v11's SVG sizing so small diagrams render at their natural
-     * width and large ones shrink to fit the container.
+     *
+     * Cache hit:  SVG string retrieved from renderCache, parsed via DOMParser, inserted.
+     * Cache miss: mermaid.render() called, result stored in renderCache, then inserted.
+     *
      * On failure, displays the error message in place of the diagram.
-     * @param {string} codeText       - Raw Mermaid diagram source.
+     * Toolbar injection is idempotent - any existing toolbar is removed before
+     * the new one is appended, preventing duplicates on re-renders.
+     *
+     * @param {string}      codeText  - Raw Mermaid diagram source.
      * @param {HTMLElement} container - The .mermaid-content div that hosts the output.
      */
     async function createPanel(codeText, container) {
         container.innerHTML = '<em style="color:#888; font-size:12px;">Rendering…</em>';
 
         try {
-            const id = 'mermaid-' + Math.random().toString(36).substr(2, 7);
-            const { svg } = await mermaid.render(id, codeText);
-            container.innerHTML = svg;
+            let svgString;
 
-            // Remove phantom whitespace text nodes left by mermaid.render().
-            // They create a spurious gap at the bottom of the container.
-            // Safe to remove - text nodes have no effect on SVG rendering.
-            Array.from(container.childNodes)
-                .filter(n => n.nodeType === Node.TEXT_NODE)
-                .forEach(n => n.remove());
+            if (renderCache.has(codeText)) {
+                svgString = renderCache.get(codeText);
+            } else {
+                const id = 'mermaid-' + Math.random().toString(36).substr(2, 7);
+                ({ svg: svgString } = await mermaid.render(id, codeText));
 
-            const svgEl = container.querySelector('svg');
-            if (svgEl) {
-                svgEl.removeAttribute('height');
-
-                // Mermaid sets width="100%" + inline style="max-width: Xpx" (the natural
-                // diagram width). Promote that natural cap to a fixed width attribute so the
-                // CSS max-width:100% rule only clips it when it genuinely overflows - small
-                // diagrams render at their natural size, large ones shrink to fit.
-                const naturalMaxWidth = svgEl.style.maxWidth;
-                if (naturalMaxWidth) {
-                    svgEl.setAttribute('width', naturalMaxWidth);
-                    svgEl.style.removeProperty('max-width');
+                // Evict the oldest entry before inserting to keep memory bounded.
+                if (renderCache.size >= RENDER_CACHE_MAX) {
+                    renderCache.delete(renderCache.keys().next().value);
                 }
+                renderCache.set(codeText, svgString);
             }
+
+            insertSvg(svgString, container);
+
         } catch (e) {
             container.innerHTML = `<pre style="color:red; margin:0;">${e.message}</pre>`;
         }
 
+        // Idempotent toolbar: remove any existing instance before appending.
+        // Guards against duplicate toolbars if createPanel is called more than once
+        // on the same container (e.g. during SPA re-hydration).
+        container.querySelector('.mermaid-toolbar')?.remove();
         container.appendChild(createToolbar(codeText));
     }
 
     // ─── DOM scanning ─────────────────────────────────────────────────────────
 
     /**
-     * Scans for Confluence code blocks containing Mermaid diagrams and replaces
-     * each with a rendered panel.
+     * Replaces a confirmed Mermaid code block with a rendered panel.
      *
-     * Confluence Cloud renders code blocks as <code class="language-..."> with
-     * per-line <span> children - not the classic <pre><code> pattern.
-     * `data-mermaid-processed` guards against double-processing on repeated calls.
+     * Wraps the panel in a .mermaid-content container marked with
+     * `data-mermaid-processed` to guard against double-processing.
+     * Replaces the full Confluence .code-block wrapper so its gray background
+     * and padding don't bleed through beneath the rendered panel.
+     * @param {HTMLElement} block    - The <code> element containing the diagram source.
+     * @param {string}      codeText - Trimmed textContent of the block.
      */
-    function processBlocks() {
-        document.querySelectorAll('code[class^="language-"]').forEach(block => {
-            if (block.closest('[data-mermaid-processed]')) return;
+    function renderBlock(block, codeText) {
+        const container = document.createElement('div');
+        container.setAttribute('data-mermaid-processed', 'true');
+        container.className = 'mermaid-content';
 
-            const text = block.textContent.trim();
-            if (!isMermaid(text)) return;
-
-            const container = document.createElement('div');
-            container.setAttribute('data-mermaid-processed', 'true');
-            container.className = 'mermaid-content';
-
-            // Replace the full Confluence .code-block wrapper so its gray background
-            // and padding don't bleed through beneath the rendered panel.
-            const codeBlock = block.closest('.code-block') || block.closest('pre') || block;
-            codeBlock.replaceWith(container);
-            createPanel(text, container);
-        });
+        const codeBlock = block.closest('.code-block') || block.closest('pre') || block;
+        codeBlock.replaceWith(container);
+        createPanel(codeText, container);
     }
 
-    processBlocks();
+    // ─── Shared pending observer (Stage 2) ───────────────────────────────────
+
+    /**
+     * Tracks <code> blocks that were empty when first encountered.
+     * The shared pendingWatcher checks this Set on every mutation within the
+     * document body and renders any block whose content has since arrived.
+     *
+     * One observer serves all pending blocks regardless of page size,
+     * keeping the total observer count fixed at two for the lifetime of the page.
+     */
+    const pendingBlocks = new Set();
+
+    const pendingWatcher = new MutationObserver(() => {
+        for (const block of pendingBlocks) {
+            const text = block.textContent?.trim();
+            if (!text) continue;
+
+            pendingBlocks.delete(block);
+            block.removeAttribute('data-mermaid-pending');
+
+            if (isMermaid(text)) renderBlock(block, text);
+        }
+    });
+
+    pendingWatcher.observe(document.body, {
+        childList:     true,  // <span> children being appended by React
+        characterData: true,  // text node content being written directly
+        subtree:       true,  // catch text nodes at any nesting depth
+    });
+
+    /**
+     * Processes a single candidate <code> block.
+     *
+     * Two-stage strategy to handle Confluence's React rendering pipeline,
+     * which inserts <code> elements before populating their text content:
+     *
+     *  Stage 1 - Content present: render immediately.
+     *  Stage 2 - Empty block: register in pendingBlocks for the shared
+     *            pendingWatcher to pick up the moment content arrives.
+     *
+     * Guards:
+     *  - `data-mermaid-processed` (on the replacement container): block has already
+     *    been rendered; skip via closest() check.
+     *  - `data-mermaid-pending`   (on the <code> element itself): block is already
+     *    registered in pendingBlocks; skip to prevent duplicate entries.
+     * @param {HTMLElement} block - A <code class="language-..."> element.
+     */
+    function processCandidate(block) {
+        // Already rendered or already queued
+        if (block.closest('[data-mermaid-processed]')) return;
+        if (block.hasAttribute('data-mermaid-pending'))   return;
+
+        const text = block.textContent.trim();
+
+        if (text) {
+            // Stage 1: content is present - validate and render immediately
+            if (isMermaid(text)) renderBlock(block, text);
+        } else {
+            // Stage 2: block is empty - Confluence hasn't populated it yet.
+            // Register with the shared pendingWatcher rather than creating a
+            // new observer per block.
+            block.setAttribute('data-mermaid-pending', 'true');
+            pendingBlocks.add(block);
+        }
+    }
+
+    /**
+     * Collects <code class="language-..."> elements from a list of added DOM nodes.
+     * Each node may itself be a candidate or may contain candidates as descendants.
+     * @param {NodeList|Array} addedNodes
+     * @returns {HTMLElement[]}
+     */
+    function extractCandidates(addedNodes) {
+        const candidates = [];
+        for (const node of addedNodes) {
+            if (node.nodeType !== Node.ELEMENT_NODE) continue;
+            if (node.matches('code[class^="language-"]')) candidates.push(node);
+            node.querySelectorAll('code[class^="language-"]').forEach(el => candidates.push(el));
+        }
+        return candidates;
+    }
+
+    // ─── Full-page rescan ─────────────────────────────────────────────────────
+
+    /**
+     * Scans the entire document for unprocessed Mermaid code blocks.
+     *
+     * WHY THIS IS NEEDED alongside the MutationObserver:
+     *
+     * The MutationObserver only fires for nodes that are ADDED to the DOM
+     * (childList mutations). On Confluence edit→save, React may RECONCILE
+     * existing DOM nodes rather than replacing them - reusing the same <code>
+     * element instances and updating their content in-place. No nodes are
+     * added, so no addedNodes mutation fires, and the observer never sees the
+     * blocks. A full rescan catches these reconciled-but-unprocessed nodes.
+     *
+     * Called exclusively on SPA navigation events, not on every DOM mutation,
+     * keeping the cost proportional to navigation frequency rather than
+     * mutation volume. pendingBlocks is cleared first to evict entries from
+     * the previous page whose source nodes may be detached or reused.
+     */
+    function rescanPage() {
+        pendingBlocks.clear();
+        document.querySelectorAll('code[class^="language-"]').forEach(processCandidate);
+    }
+
+    // ─── Bootstrap ────────────────────────────────────────────────────────────
+
+    // Process any blocks already present in the DOM before the observer attaches.
+    document.querySelectorAll('code[class^="language-"]').forEach(processCandidate);
 
     // ─── MutationObserver (SPA navigation) ───────────────────────────────────
 
     /**
-     * Confluence is a React SPA - page content loads incrementally after navigation.
+     * Catches code blocks that arrive as genuinely new DOM nodes - the common
+     * case during normal SPA navigation where React mounts fresh content.
      *
-     * Two subtleties:
-     *  1. SELF-TRIGGER: container mutations (our own innerHTML writes) fire the
-     *     observer. Filter them out by checking m.target against our containers.
-     *  2. RACE CONDITION: Confluence renders content in batches. Debounce by 300ms
-     *     so we scan only after the DOM has settled.
+     * Observes document.body rather than #main-content: Confluence replaces
+     * #main-content on edit→save (React unmounts/remounts the view component),
+     * which would silently kill a scoped observer. document.body is never
+     * replaced in a SPA and is always a stable observation target.
+     *
+     * Self-trigger prevention: our own DOM writes (container creation, SVG
+     * insertion) never introduce <code class="language-..."> elements, so
+     * extractCandidates() naturally returns nothing for those mutations.
      */
-    let debounceTimer;
     new MutationObserver((mutations) => {
-        const relevant = mutations.some(m => !m.target.closest('[data-mermaid-processed]'));
-        if (!relevant) return;
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(processBlocks, 300);
+        const added = mutations.flatMap(m => [...m.addedNodes]);
+        extractCandidates(added).forEach(processCandidate);
     }).observe(document.body, { childList: true, subtree: true });
+
+    // ─── SPA navigation detection ─────────────────────────────────────────────
+
+    /**
+     * Confluence uses React Router, which updates the URL via history.pushState
+     * without triggering a browser navigation. On edit→save, the sequence is:
+     *
+     *   1. User saves → Confluence calls history.pushState (edit URL → view URL)
+     *   2. React reconciles the DOM - it may REUSE existing <code> nodes rather
+     *      than removing and re-adding them. No childList mutation fires for
+     *      those nodes, so the MutationObserver above never sees them.
+     *
+     * Intercepting pushState ensures a full DOM rescan is scheduled after each
+     * navigation, covering reconciled nodes that the observer cannot detect.
+     *
+     * WHY double requestAnimationFrame:
+     * history.pushState fires synchronously BEFORE React has re-rendered.
+     * - rAF 1: queued after the current task; React schedules its render here.
+     * - rAF 2: fires after React has committed the updated DOM to the screen.
+     * A single rAF or setTimeout(0) is not sufficient when React defers its
+     * commit to the next paint cycle (concurrent/batched rendering mode).
+     *
+     * popstate handles browser back/forward navigation over the same routes.
+     */
+    function onSpaNavigate() {
+        requestAnimationFrame(() => requestAnimationFrame(rescanPage));
+    }
+
+    // Wrap pushState to intercept React Router navigation
+    const _pushState = history.pushState.bind(history);
+    history.pushState = function (...args) {
+        _pushState(...args);
+        onSpaNavigate();
+    };
+
+    // Handle browser back/forward buttons
+    window.addEventListener('popstate', onSpaNavigate);
 
 })();
