@@ -85,7 +85,10 @@ Inline `<style>` tags are not restricted by Confluence's CSP, so
 2. Injects `mermaid.min.js` and `mermaid-page.js` into the page context
 3. `mermaid-page.js` scans the DOM for `<code class="language-...">` elements whose text starts with a known Mermaid keyword
 4. Each matching block is replaced with a rendered SVG diagram panel
-5. A `MutationObserver` (debounced 300ms) watches for new content added by the SPA router and re-runs the scan
+5. A two-stage event-driven pipeline watches for new and updated content across SPA navigations:
+   - **Stage 1** - a `MutationObserver` on `document.body` catches newly added `<code>` blocks; those with content render immediately
+   - **Stage 2** - blocks that arrive empty (React inserts the element before populating it) are registered in a shared pending Set; a second observer triggers rendering as soon as content is detected, completing asynchronously via `mermaid.render()`
+   - **SPA navigation** - `history.pushState` is intercepted and `popstate` is listened to; on each navigation a full rescan runs after two `requestAnimationFrame` callbacks, covering cases where React reconciles existing DOM nodes rather than replacing them (no insertion mutation fires for reused nodes)
 
 ### Open Mermaid Live icon - injection detail
 
@@ -120,10 +123,6 @@ v11 sets `width="100%"`, a `height` attribute, and an inline `style="max-width: 
 
 Fix: remove the `height` attribute, promote the inline `max-width` value to a `width` attribute, then remove the inline style. The CSS rule then caps it only when it genuinely overflows - small diagrams render at their natural size.
 
-### Phantom text nodes
-
-After `mermaid.render()`, leftover whitespace text nodes in the container create a spurious gap at the bottom. These are filtered out by type (`Node.TEXT_NODE`) and removed; they have no effect on SVG rendering.
-
 ### Label rendering (`<foreignObject>`)
 
 v11 renders node and edge labels inside `<foreignObject>` divs, making them subject to Confluence's full CSS cascade.
@@ -142,9 +141,15 @@ Two issues arise:
 | `look: 'handDrawn'` | Rough.js aesthetic - intentional, distinguishes diagrams from page content |
 | `securityLevel: 'strict'` | `'loose'` allows raw HTML in node labels (e.g. `["line one<br/>line two"]`) which increases XSS risk when diagram content is not fully sanitized |
 | Each "Open in Mermaid Live" click opens a new tab | Prevents overwriting edits the user may have made in a previously opened tab |
-| 300ms MutationObserver debounce | Confluence/Jira render page content incrementally after SPA navigation. Scanning too early means `isMermaid()` sees empty code blocks |
-| MutationObserver self-trigger filter | Our own `innerHTML` writes fire the observer. Filtered by checking `m.target.closest('[data-mermaid-processed]')` to avoid redundant re-scans |
-| `data-mermaid-processed` guard | Prevents double-processing when the MutationObserver fires multiple times on the same content |
+| Two-stage rendering pipeline | React inserts `<code>` elements before populating them. Stage 1 renders blocks whose content is already present; Stage 2 registers empty blocks in a pending Set and renders them the moment content arrives. No timer - each block renders at the earliest correct moment |
+| Shared pending watcher | A single `MutationObserver` serves all Stage 2 pending blocks. Keeps total observer count fixed at two regardless of how many diagrams are on the page |
+| `document.body` as observation target | Confluence replaces `#main-content` on edit→save (React unmounts/remounts the view component), which silently kills a scoped observer. `document.body` is never replaced in a SPA and is always stable |
+| `pushState` interception + double `requestAnimationFrame` | On edit→save, React reconciles the DOM - reusing existing `<code>` nodes rather than replacing them. No insertion mutation fires, so the observer alone misses them. Intercepting `pushState` triggers a full rescan after two rAF callbacks, which is the earliest point after React has committed its updated DOM |
+| SVG inserted via `DOMParser` | Avoids HTML parser ambiguity for SVG content, produces no phantom text nodes, and surfaces malformed SVG via a detectable `<parsererror>` root rather than silently mangling it. `document.adoptNode()` makes cross-document ownership explicit before insertion |
+| Render cache (bounded `Map`, 100 entries) | Confluence SPA navigation revisits the same pages frequently. Caching SVG strings by source text eliminates redundant `mermaid.render()` calls on repeat navigation. Oldest-first eviction keeps memory bounded |
+| Random render ID (not content hash) | Mermaid stamps SVG-internal element IDs, clip-path refs, and marker IDs with the render ID. A content hash would produce the same ID for identical diagrams on the same page, causing the second diagram's internal references to resolve against the first. Random ID guarantees uniqueness per call |
+| `data-mermaid-processed` guard on the container | Prevents double-processing across all code paths (bootstrap sweep, main observer, navigation rescan). Set on the replacement container, not the original `<code>` element - `closest()` correctly skips any descendant of a rendered diagram |
+| `data-mermaid-pending` guard on the `<code>` element | Prevents an empty block from being added to `pendingBlocks` more than once if the main observer fires multiple times before content arrives |
 | Replace `.code-block` wrapper | Confluence wraps `<code>` in a `.code-block` div with its own gray background and padding. Replacing the wrapper (falling back to `<pre>` or the `<code>` element itself) prevents the original styling from bleeding through beneath the rendered panel |
 | Toolbar opacity 0.5 on hover | Subtle presence - the toolbar is discoverable without competing with the diagram itself |
 | "Rendering…" placeholder | Shown while `mermaid.render()` is in flight; replaced by the SVG (or an error) on completion |
