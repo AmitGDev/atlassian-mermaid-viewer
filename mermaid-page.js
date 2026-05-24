@@ -149,30 +149,16 @@
     // ─── Mermaid init ─────────────────────────────────────────────────────────
 
     /**
-     * Initialise Mermaid.
+     * Initialise Mermaid with the resolved team-wide config.
+     *
+     * The config is written to dataset.mermaidConfig by mermaid-viewer.js before
+     * this script is injected, so the read is always synchronous and the value is
+     * always present.  mermaid-viewer.js is the authoritative source for default
+     * values, field validation, and the rationale for each option (see MERMAID_DEFAULTS
+     * and the AMV-25/AMV-28 references there).
      */
-    mermaid.initialize({
-        // We call mermaid.render() directly - don't let Mermaid scan the page itself.
-        startOnLoad: false,
-
-        // "securityLevel: 'strict'" is used to prevent HTML injection in node labels.
-        // In strict mode, tags such as <br/> are rendered as plain text instead of being interpreted as HTML.
-        //
-        // We intentionally avoid 'loose' mode because it enables raw HTML rendering inside labels,
-        // which increases XSS risk when diagram content is not fully sanitized.
-        //
-        // Although current input originates from Confluence page editors (trusted source),
-        // we still treat it as untrusted until proper sanitization is implemented.
-        //
-        // Switching to 'loose' mode was considered and deliberately rejected (see AMV-28).
-        // The complexity of input and output sanitization required to do so safely
-        // was not justified by the formatting benefit (<br/>, bold, italic in labels).
-        // This decision should not be revisited without a concrete user requirement
-        // and a dedicated sanitization ticket.
-        securityLevel: 'strict',
-
-        look: 'handDrawn'
-    });
+    const config = JSON.parse(document.documentElement.dataset.mermaidConfig);
+    mermaid.initialize(config);
 
     // ─── Diagram detection ────────────────────────────────────────────────────
 
