@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Atlassian Mermaid Viewer",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Renders Mermaid diagrams in Confluence and Jira, with quick actions to open in Mermaid Live Editor and copy diagram source code.",
 
   "icons": {
