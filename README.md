@@ -18,6 +18,7 @@ A Cross-Browser (Chrome, Edge & Firefox) extension that automatically renders [M
 - Supports Confluence Cloud and Jira (both are React SPAs - handled via MutationObserver)
 - Light and dark mode aware
 - No external runtime requests - all assets are bundled locally
+- **Central configuration (v1.1.0)** - a space admin can define a org-wide Mermaid rendering config (theme, look, font, security level) in a single Confluence page; the extension picks it up automatically on every Atlassian surface, including Jira, with no per-member setup
 
 ---
 
@@ -28,7 +29,7 @@ The extension has two JavaScript files with distinct responsibilities, separated
 ```
 atlassian-mermaid-viewer/
 ├── manifest.json
-├── mermaid-viewer.js     # content script - bridges icon into page context, injects page scripts
+├── mermaid-viewer.js     # content script - resolves org-wide config, bridges icon and config into page context, injects page scripts
 ├── mermaid-page.js       # page-context script - injected by mermaid-viewer.js
 ├── vendors/
 │   └── mermaid.min.js    # bundled Mermaid v11 - injected by mermaid-viewer.js
@@ -83,10 +84,13 @@ Inline `<style>` tags are not restricted by Confluence's CSP, so
 ## How it works
 
 1. `mermaid-viewer.js` runs at `document_idle` as a content script
-2. Injects `mermaid.min.js` and `mermaid-page.js` into the page context
-3. `mermaid-page.js` scans the DOM for `<code class="language-...">` elements whose text starts with a known Mermaid keyword
-4. Each matching block is replaced with a rendered SVG diagram panel
-5. A two-stage event-driven pipeline watches for new and updated content across SPA navigations:
+2. In parallel: fetches and tints `assets/icon.svg`; resolves the Mermaid config (see [Central Configuration](#central-configuration-v110))
+3. Writes the resolved config to `document.documentElement.dataset.mermaidConfig`; writes the tinted icon SVG to `dataset.mermaidIconSvg`
+4. Once both are ready (`Promise.all`), injects `mermaid.min.js` then `mermaid-page.js` into the page context
+5. `mermaid-page.js` reads `dataset.mermaidConfig` and calls `mermaid.initialize(config)` before the first render
+6. Scans the DOM for `<code class="language-...">` elements whose text starts with a known Mermaid keyword
+7. Each matching block is replaced with a rendered SVG diagram panel
+8. A two-stage event-driven pipeline watches for new and updated content across SPA navigations:
    - **Stage 1** - a `MutationObserver` on `document.body` catches newly added `<code>` blocks; those with content render immediately
    - **Stage 2** - blocks that arrive empty (React inserts the element before populating it) are registered in a shared pending Set; a second observer triggers rendering as soon as content is detected, completing asynchronously via `mermaid.render()`
    - **SPA navigation** - `history.pushState` is intercepted and `popstate` is listened to; on each navigation a full rescan runs after two `requestAnimationFrame` callbacks, covering cases where React reconciles existing DOM nodes rather than replacing them (no insertion mutation fires for reused nodes)
@@ -140,6 +144,10 @@ Two issues arise:
 | Decision | Rationale |
 |---|---|
 | `look: 'handDrawn'` | Rough.js aesthetic - intentional, distinguishes diagrams from page content |
+| In-memory config cache (not `browser.storage`) | `browser.storage` requires a declared `"storage"` permission visible to every user at install time. The config is a small, rarely-changing value; per-tab in-memory caching is sufficient. Zero permissions overhead. |
+| Config read from Confluence page body (not file attachment) | Page body requires one REST call (`expand=body.storage`); an attachment requires three (page ID → attachment ID → download). More critically, paste-and-save is the correct workflow for an IT admin receiving a JSON snippet - no file management required. |
+| Global config space key `AMVCENTRAL` is hardcoded | A user-configurable key would let any user redirect config resolution to a space they control, allowing them to set `securityLevel: loose` for themselves. Convention-based discovery has the same flaw. Hardcoding the key removes this attack surface entirely - only someone with edit access to `AMVCENTRAL` can change the global baseline. |
+| Config page titled `config` | The space is the namespace. The extension fetches from a specific hardcoded space key; a `config` page in any other space is structurally invisible to that lookup. A globally unique name is unnecessary when scoping is enforced by construction. |
 | `securityLevel: 'strict'` | `'loose'` allows raw HTML in node labels (e.g. `["line one<br/>line two"]`) which increases XSS risk when diagram content is not fully sanitized |
 | Each "Open in Mermaid Live" click opens a new tab | Prevents overwriting edits the user may have made in a previously opened tab |
 | Two-stage rendering pipeline | React inserts `<code>` elements before populating them. Stage 1 renders blocks whose content is already present; Stage 2 registers empty blocks in a pending Set and renders them the moment content arrives. No timer - each block renders at the earliest correct moment |
@@ -155,6 +163,87 @@ Two issues arise:
 | Toolbar opacity 0.5 on hover | Subtle presence - the toolbar is discoverable without competing with the diagram itself |
 | "Rendering…" placeholder | Shown while `mermaid.render()` is in flight; replaced by the SVG (or an error) on completion |
 | Mermaid Live icon tinted at startup | `assets/icon.svg` is fetched once by the content script, the background rect is replaced with `#FF3670` via a regex targeting the `<rect>` element (not the color value, so it is robust against future icon color changes), and the result is stored in `dataset` for `mermaid-page.js` to consume synchronously. No external fetch, no duplicate asset, no CSS filter hacks |
+
+---
+
+## Central Configuration (v1.1.0)
+
+The extension supports a team-wide Mermaid rendering config defined by a space admin in Confluence. The config applies automatically across all Atlassian surfaces - Confluence and Jira alike - with no per-member setup and no changes to diagram source.
+
+### Resolution order
+
+The extension resolves configuration in the following order on each new tab:
+
+1. **`AMVCENTRAL` global space** - provides a consistent org-wide baseline across all Atlassian surfaces. If a config page exists in the AMVCENTRAL global space, it is used as the source of truth.
+2. **Extension defaults** - if no global config page exists, the extension falls back to built-in hardcoded defaults.
+
+No errors are shown if no config page is found.
+
+### Deployment prerequisites
+
+> **The org admin must create the `AMVCENTRAL` space before rolling out the extension to any user.**
+
+The extension resolves its entire configuration from `AMVCENTRAL`. Whoever creates that space becomes its owner and controls the org-wide Mermaid security baseline - including `securityLevel`. If a regular user creates `AMVCENTRAL` first, they own it and can set `securityLevel: loose` for the entire org silently.
+
+Required steps, in order, before any user installs the extension:
+
+1. The org admin creates the `AMVCENTRAL` Confluence space.
+2. The admin verifies that only admins have write access to the `AMVCENTRAL` space.
+3. The admin creates a page titled `config` inside `AMVCENTRAL` and pastes the desired org-wide baseline JSON into the body.
+4. The extension is rolled out to users.
+
+An empty `AMVCENTRAL` space with no `config` page is safe - the extension falls back to `MERMAID_DEFAULTS` which enforces `securityLevel: strict`. The critical requirement is that the space itself is created and owned by the admin before any user can act.
+
+### Setting up org-wide config
+
+Once `AMVCENTRAL` is created and secured:
+
+1. Open the `config` page in the `AMVCENTRAL` space.
+2. Paste the JSON config into the page body and save.
+
+The admin workflow is intentionally minimal: receive a JSON snippet, open the page, paste, save.
+
+### Config format
+
+Plain text or a code block - both are supported transparently.
+
+```json
+{
+  "theme": "forest",
+  "look": "classic",
+  "securityLevel": "strict"
+}
+```
+
+Only fields that differ from the extension defaults need to be specified.
+
+### Supported fields
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `theme` | string | `"default"` | Any Mermaid theme: `default`, `forest`, `dark`, `neutral` |
+| `look` | string | `"handDrawn"` | `"handDrawn"` or `"classic"` |
+| `fontFamily` | string | _(Mermaid default)_ | Any valid CSS font-family value |
+| `securityLevel` | string | `"strict"` | `"strict"` or `"loose"`. Relaxing this is a governed admin decision - see Key Decisions. |
+
+### Extension defaults
+
+```javascript
+const MERMAID_DEFAULTS = {
+    startOnLoad:   false,
+    look:          'handDrawn',
+    theme:         'default',
+    securityLevel: 'strict',
+};
+```
+
+The resolved config is merged on top of these defaults. The config page only needs to specify values that differ.
+
+### Security model
+
+Trust is delegated entirely to the Atlassian permission system. Whoever has edit access to the config page is treated as trusted - the same trust level they already hold over every diagram and page in that space. Config fields are validated for type correctness only; unknown keys are silently dropped. Security-sensitive fields such as `securityLevel` are intentionally exposed to admins as a governed decision.
+
+The global space key `AMVCENTRAL` is hardcoded and not user-configurable. See Key Decisions for the full rationale.
 
 ---
 
