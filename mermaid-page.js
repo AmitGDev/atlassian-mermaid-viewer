@@ -371,16 +371,17 @@
     async function createPanel(codeText, container) {
         container.innerHTML = '<em style="color:#888; font-size:12px;">Rendering…</em>';
 
+        // Hoisted so the catch block can clean up Mermaid's temporary element.
+        const id = 'mermaid-' + Math.random().toString(36).substr(2, 7);
+
         try {
             let svgString;
 
             if (renderCache.has(codeText)) {
                 svgString = renderCache.get(codeText);
             } else {
-                const id = 'mermaid-' + Math.random().toString(36).substr(2, 7);
                 ({ svg: svgString } = await mermaid.render(id, codeText));
 
-                // Evict the oldest entry before inserting to keep memory bounded.
                 if (renderCache.size >= RENDER_CACHE_MAX) {
                     renderCache.delete(renderCache.keys().next().value);
                 }
@@ -390,12 +391,20 @@
             insertSvg(svgString, container);
 
         } catch (e) {
-            container.innerHTML = `<pre style="color:red; margin:0;">${e.message}</pre>`;
+            // textContent, not innerHTML: e.message embeds diagram source written by
+            // whoever edited the page, so it must never be parsed as markup.
+            const pre = document.createElement('pre');
+            pre.style.cssText = 'color:red; margin:0;';
+            pre.textContent = e.message;
+            container.replaceChildren(pre);
+
+            // On a parse failure mermaid.render leaves its own error diagram (the bomb)
+            // in a temp element on <body>. Our inline message replaces it, so drop it
+            // to stop one leaked error per broken diagram.
+            document.getElementById('d' + id)?.remove();
+            document.getElementById(id)?.remove();
         }
 
-        // Idempotent toolbar: remove any existing instance before appending.
-        // Guards against duplicate toolbars if createPanel is called more than once
-        // on the same container (e.g. during SPA re-hydration).
         container.querySelector('.mermaid-toolbar')?.remove();
         container.appendChild(createToolbar(codeText));
     }
