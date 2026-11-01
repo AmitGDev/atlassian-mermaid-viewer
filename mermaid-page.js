@@ -81,8 +81,10 @@
         - display: flex: restores what Confluence collapsed; without it the remaining
             properties have no effect.
         - align-items: center: vertically centers the label within the node box.
-        - justify-content: center: horizontally centers the label; without it text
-            sits left-aligned inside the node.
+        - justify-content: safe center: horizontally centers the label, but falls back
+            to start alignment when the label is wider than its node. Plain "center"
+            splits the overflow across both sides and clips the start of the text.
+            The preceding plain "center" is the fallback for browsers that reject "safe".
         - height: 100%: stretches the div to the full foreignObject height so
             align-items has space to center within; without it the div shrinks to
             content height and vertical centering has nothing to work against. */
@@ -90,7 +92,24 @@
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
+            justify-content: safe center !important;
             height: 100% !important;
+        }
+
+        /* Mermaid measures labels in a temporary div appended to <body> (id "d" + render
+        id), outside .mermaid-content, so the reverts above do not apply there. Text is
+        then measured under Confluence's CSS but displayed without it, and the final
+        text can come out wider than the box it was sized for. Applying the same revert
+        to the measuring div makes both phases use identical text metrics. The flex rule
+        is intentionally NOT applied here: it depends on the foreignObject already having
+        its final size, which does not exist yet during measurement. */
+        div[id^="dmermaid-"] svg foreignObject * {
+            all: revert;
+        }
+
+        /* Last-resort guard: show slightly oversized text instead of clipping it. */
+        .mermaid-content svg foreignObject {
+            overflow: visible;
         }
 
         /* ── Hover toolbar ────────────────────────────────────────── */
