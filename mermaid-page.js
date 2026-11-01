@@ -182,18 +182,40 @@
 
     // ─── Diagram detection ────────────────────────────────────────────────────
 
-    const MERMAID_STARTERS = [
-        'graph ', 'flowchart ', 'sequenceDiagram', 'classDiagram',
-        'erDiagram', 'gantt', 'pie ', 'stateDiagram', 'gitGraph'
+    // Diagram keywords, matched as whole leading words (see MERMAID_START). Beta types are
+    // listed by their base word so "-beta" and "-elk" variants match without separate
+    // entries, and the entry keeps working when a type graduates from beta. This is why
+    // "railroad" alone covers railroad-beta, railroad-ebnf-beta, railroad-abnf-beta and
+    // railroad-peg-beta.
+    // ZenUML is deliberately absent: it is an external diagram that must be registered
+    // with Mermaid separately before it can render.
+    const MERMAID_KEYWORDS = [
+        'graph', 'flowchart', 'sequenceDiagram', 'classDiagram', 'stateDiagram',
+        'erDiagram', 'journey', 'gantt', 'pie', 'quadrantChart', 'requirementDiagram',
+        'gitGraph', 'C4Context', 'C4Container', 'C4Component', 'C4Dynamic',
+        'C4Deployment', 'mindmap', 'timeline', 'sankey', 'xychart', 'block',
+        'packet', 'kanban', 'architecture', 'radar', 'treemap', 'treeView',
+        'wardley', 'cynefin', 'usecase', 'venn', 'swimlane', 'ishikawa',
+        'eventmodeling', 'railroad',
     ];
+
+    // A word boundary rather than a trailing space, so a keyword alone on its line
+    // ("pie") is detected while prose that merely starts with a keyword prefix
+    // ("graphite ...", "pieces of ...") is not mistaken for a diagram.
+    const MERMAID_START = new RegExp(`^(?:${MERMAID_KEYWORDS.join('|')})\\b`);
+
+    // Mermaid allows frontmatter, %%{init}%% directives and %% comments before the
+    // diagram keyword; without skipping them, styled diagrams would never be detected.
+    const MERMAID_PREAMBLE = /^(?:\s*---\r?\n[\s\S]*?\r?\n---|\s*%%\{[\s\S]*?\}%%|\s*%%.*)*\s*/;
 
     /**
      * Returns true if the given text looks like a Mermaid diagram.
-     * Matches against known diagram-type keywords that must appear at the start.
+     * Matches against known diagram-type keywords that must appear at the start,
+     * after any frontmatter, directives or comments have been skipped.
      * @param {string} text - Trimmed text content of a code block.
      */
     function isMermaid(text) {
-        return MERMAID_STARTERS.some(s => text.startsWith(s));
+        return MERMAID_START.test(text.replace(MERMAID_PREAMBLE, ''));
     }
 
     // ─── Icon SVGs ────────────────────────────────────────────────────────────
