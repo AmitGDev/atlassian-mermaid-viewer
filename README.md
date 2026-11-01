@@ -11,6 +11,7 @@ A Cross-Browser (Chrome, Edge & Firefox) extension that automatically renders [M
 ## Features
 
 - Renders Mermaid diagrams inline, replacing the raw code snippet block
+- Detects every current Mermaid diagram type, including the beta ones (see [Diagram detection](#diagram-detection))
 - Hand-drawn visual style (`look: 'handDrawn'`)
 - Hover toolbar with two actions:
   - **Open in Mermaid Live** - opens a new tab with the diagram pre-loaded for editing, exporting, or sharing
@@ -32,7 +33,7 @@ atlassian-mermaid-viewer/
 ├── mermaid-viewer.js     # content script - resolves org-wide config, bridges icon and config into page context, injects page scripts
 ├── mermaid-page.js       # page-context script - injected by mermaid-viewer.js
 ├── vendors/
-│   └── mermaid.min.js    # bundled Mermaid v11 - injected by mermaid-viewer.js
+│   └── mermaid.min.js    # bundled Mermaid v12.2 - injected by mermaid-viewer.js
 ├── assets/
 │   ├── icon.svg          # authored source icon - single source of truth for all icons
 │   ├── promo_marquee_1400x560.png
@@ -45,6 +46,7 @@ atlassian-mermaid-viewer/
 │   └── icon128_padded.png
 ├── make-icons.ps1        # generates icons/ from assets/icon.svg
 ├── README.md
+├── CHANGELOG.md
 └── LICENSE
 ```
 
@@ -88,7 +90,7 @@ Inline `<style>` tags are not restricted by Confluence's CSP, so
 3. Writes the resolved config to `document.documentElement.dataset.mermaidConfig`; writes the tinted icon SVG to `dataset.mermaidIconSvg`
 4. Once both are ready (`Promise.all`), injects `mermaid.min.js` then `mermaid-page.js` into the page context
 5. `mermaid-page.js` reads `dataset.mermaidConfig` and calls `mermaid.initialize(config)` before the first render
-6. Scans the DOM for `<code class="language-...">` elements whose text starts with a known Mermaid keyword
+6. Scans the DOM for `<code class="language-...">` elements whose text starts with a known Mermaid keyword (after any frontmatter, directive or comment - see [Diagram detection](#diagram-detection))
 7. Each matching block is replaced with a rendered SVG diagram panel
 8. A two-stage event-driven pipeline watches for new and updated content across SPA navigations:
    - **Stage 1** - a `MutationObserver` on `document.body` catches newly added `<code>` blocks; those with content render immediately
@@ -105,16 +107,25 @@ Inline `<style>` tags are not restricted by Confluence's CSP, so
 
 ## Diagram detection
 
-Mermaid diagrams are detected by checking whether the trimmed code block text starts with a known diagram-type keyword:
+A code block is rendered as Mermaid when its trimmed text, after any leading frontmatter (`---`), `%%{init}%%` directive or `%%` comment, starts with a known diagram-type keyword:
 
 ```javascript
-const MERMAID_STARTERS = [
-    'graph ', 'flowchart ', 'sequenceDiagram', 'classDiagram',
-    'erDiagram', 'gantt', 'pie ', 'stateDiagram', 'gitGraph'
+const MERMAID_KEYWORDS = [
+    'graph', 'flowchart', 'sequenceDiagram', 'classDiagram', 'stateDiagram',
+    'erDiagram', 'journey', 'gantt', 'pie', 'quadrantChart', 'requirementDiagram',
+    'gitGraph', 'C4Context', 'C4Container', 'C4Component', 'C4Dynamic',
+    'C4Deployment', 'mindmap', 'timeline', 'sankey', 'xychart', 'block',
+    'packet', 'kanban', 'architecture', 'radar', 'treemap', 'treeView',
+    'wardley', 'cynefin', 'usecase', 'venn', 'swimlane', 'ishikawa',
+    'eventmodeling', 'railroad',
 ];
 ```
 
-To support a new diagram type, add its keyword here.
+- The keyword is matched as a whole word, not as a prefix followed by a space. A keyword alone on its line (`pie`) is detected, and prose that merely starts with a keyword prefix (`graphite ...`) is not.
+- Beta types are listed by their base word, so `sankey` also matches `sankey-beta`, and `railroad` covers `railroad-beta`, `railroad-ebnf-beta`, `railroad-abnf-beta` and `railroad-peg-beta`. The entry keeps working when a type graduates from beta.
+- ZenUML is not listed: it is an external diagram that must be registered with Mermaid separately before it can render.
+
+To support a new diagram type, add its base keyword (without any `-beta` suffix) to `MERMAID_KEYWORDS` and add a test for it to the QA page.
 
 ---
 
@@ -162,6 +173,9 @@ Two issues arise:
 | Replace `.code-block` wrapper | Confluence wraps `<code>` in a `.code-block` div with its own gray background and padding. Replacing the wrapper (falling back to `<pre>` or the `<code>` element itself) prevents the original styling from bleeding through beneath the rendered panel |
 | Toolbar opacity 0.5 on hover | Subtle presence - the toolbar is discoverable without competing with the diagram itself |
 | "Rendering…" placeholder | Shown while `mermaid.render()` is in flight; replaced by the SVG (or an error) on completion |
+| Error message set via `textContent` | The message embeds the diagram source, which is written by whoever edited the page. Setting it as HTML would let that author inject markup into the page context |
+| Remove Mermaid's temporary render element on error | On a parse failure `mermaid.render()` leaves its own error diagram (the bomb icon) in a temporary element on `<body>`. The inline error message replaces it, so the leftover is removed to avoid one leaked error per broken diagram |
+| Keywords matched as whole words, beta types by base word | A trailing-space prefix missed a keyword alone on its line, and a plain prefix would match prose such as `graphite ...`. A word boundary handles both, and also matches `-beta` and `-elk` variants without separate entries |
 | Mermaid Live icon tinted at startup | `assets/icon.svg` is fetched once by the content script, the background rect is replaced with `#FF3670` via a regex targeting the `<rect>` element (not the color value, so it is robust against future icon color changes), and the result is stored in `dataset` for `mermaid-page.js` to consume synchronously. No external fetch, no duplicate asset, no CSS filter hacks |
 
 ---
@@ -277,7 +291,7 @@ The global space key `AMVCENTRAL` is hardcoded and not user-configurable. See Ke
 Download and strip the BOM in one step:
 
 ```powershell
-curl.exe -L "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" -o "mermaid.min.js"
+curl.exe -L "https://cdn.jsdelivr.net/npm/mermaid@12.2/dist/mermaid.min.js" -o "mermaid.min.js"
 $content = [System.IO.File]::ReadAllText("mermaid.min.js", [System.Text.Encoding]::UTF8)
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText("mermaid.min.js", $content, $utf8NoBom)
