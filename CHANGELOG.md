@@ -4,7 +4,18 @@ All notable changes to Atlassian Mermaid Viewer are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.2.0] - 2026-11-02
+## [1.2.1] - 2026-11-02
+
+### Changed
+
+- Mermaid is now bundled as its chunked ES module distribution instead of a single `mermaid.min.js` file. Each diagram type is a separate file loaded on demand, so no single file exceeds the 5 MB upload limit that blocked the Firefox (AMO) submission of 1.2.0. Rendering behavior is unchanged.
+- The first render of a diagram type may take slightly longer, because its chunk is loaded on demand. The browser caches it afterwards.
+
+### Security
+
+- Mermaid is no longer exposed as a `window.mermaid` global in the host page. It is imported as a module by the extension's page script, so other scripts on the Confluence or Jira page can no longer reach it.
+
+## [1.2.0] - 2026-11-01
 
 ### Changed
 
