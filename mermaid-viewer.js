@@ -4,12 +4,18 @@
  * Content script - runs in the browser's isolated world at document_idle.
  * Supports Chrome, Edge (Chromium), and Firefox.
  *
- * Content scripts cannot directly share globals (like `window.mermaid`)
- * with the host page. To work around this, we inject both mermaid.min.js and
- * mermaid-page.js into the page as <script src="..."> tags, so they execute
- * in the page's own JavaScript context where the mermaid global is accessible.
+ * Content scripts run in an isolated world and cannot render into the host
+ * page's own JavaScript context, which Mermaid needs so that it can measure
+ * labels under Confluence's CSS. To work around this, we inject mermaid-page.js
+ * into the page as a <script type="module" src="..."> tag.
  *
- * Both files are declared as web_accessible_resources in manifest.json, which
+ * Mermaid ships as a chunked ESM build (diagram types lazy-load as separate
+ * files) because the single-file bundle exceeds the AMO upload size limit.
+ * mermaid-page.js imports the ESM entry itself; the entry and its chunks are
+ * fetched on demand from the extension origin, so they must be
+ * web_accessible_resources as well.
+ *
+ * All of these files are declared as web_accessible_resources in manifest.json, which
  * makes them available via browser-specific extension URLs:
  *   Chrome / Edge  chrome-extension://<id>/<filename>
  *   Firefox        moz-extension://<id>/<filename>
@@ -18,10 +24,9 @@
  * any supported browser.
  *
  * Responsibilities:
- *  - Inject mermaid.min.js into the page context
  *  - Resolve team-wide Mermaid config from a Confluence page body
  *  - Bridge the resolved config to mermaid-page.js via dataset.mermaidConfig
- *  - Inject mermaid-page.js once both Mermaid and the config are ready
+ *  - Inject mermaid-page.js (as a module) once the icon and config are ready
  */
 (function () {
     'use strict';
@@ -34,10 +39,14 @@
      * @param {string} url        - The extension URL of the script to inject
      *                              (chrome-extension:// on Chrome/Edge, moz-extension:// on Firefox).
      * @param {Function} [onload] - Optional callback fired after the script has loaded.
+     * @param {boolean} [isModule=false] - Load as an ES module. Required for
+     *                              mermaid-page.js: it uses a static import, and the
+     *                              Mermaid build lazy-loads its diagram chunks.
      */
-    function injectScript(url, onload) {
+    function injectScript(url, onload, isModule = false) {
         const s = document.createElement('script');
         s.src = url;
+        if (isModule) s.type = 'module';
         if (onload) s.onload = onload;
         document.head.appendChild(s);
     }
@@ -45,8 +54,7 @@
     // ─── Resource URLs ────────────────────────────────────────────────────────
 
     // Resolve the chrome-extension:// URLs for our bundled resources
-    const mermaidUrl = browser.runtime.getURL('vendors/mermaid.min.js');
-    const pageUrl    = browser.runtime.getURL('mermaid-page.js');
+    const pageUrl = browser.runtime.getURL('mermaid-page.js');
 
     // ─── Config resolution ────────────────────────────────────────────────────
 
@@ -243,10 +251,8 @@
 
     // ─── Injection sequence ───────────────────────────────────────────────────
 
-    // Load Mermaid first; inject our viewer only once Mermaid, the icon, and
-    // the resolved config are all ready.
-    injectScript(mermaidUrl, () => {
-        Promise.all([iconReady, configReady]).then(() => injectScript(pageUrl));
-    });
+    // mermaid-page.js reads the icon and config synchronously on load, so it must
+    // be injected only after both are in the DOM. It imports Mermaid itself.
+    Promise.all([iconReady, configReady]).then(() => injectScript(pageUrl, null, true));
 
-})();
+})();
