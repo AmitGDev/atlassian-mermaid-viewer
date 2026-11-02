@@ -2,15 +2,21 @@
  * mermaid-page.js
  *
  * Runs in the PAGE context (not the browser's isolated content-script world).
- * Injected by mermaid-viewer.js via a <script src="<extension-url>..."> tag
- * (chrome-extension:// on Chrome/Edge, moz-extension:// on Firefox),
+ * Injected by mermaid-viewer.js via a <script type="module" src="<extension-url>...">
+ * tag (chrome-extension:// on Chrome/Edge, moz-extension:// on Firefox),
  * which Confluence's CSP explicitly allows on all supported browsers.
+ *
+ * Loaded as an ES module so it can import the chunked Mermaid build directly;
+ * the single-file bundle exceeded the AMO upload size limit. Importing (rather
+ * than exposing window.mermaid) keeps Mermaid out of the host page's globals.
  *
  * Responsibilities:
  *  - Scan the page for Confluence code blocks containing Mermaid syntax
  *  - Replace each block with a rendered chart + hover icon toolbar
  *  - Watch for dynamically loaded content (Confluence is a React SPA) via MutationObserver
  */
+import mermaid from './vendors/mermaid.esm.min.mjs';
+
 (function () {
     'use strict';
 
