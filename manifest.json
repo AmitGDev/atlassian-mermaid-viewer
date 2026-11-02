@@ -33,7 +33,12 @@
 
   "web_accessible_resources": [
     {
-      "resources": ["vendors/mermaid.min.js", "assets/icon.svg", "mermaid-page.js"],
+      "resources": [
+        "vendors/mermaid.esm.min.mjs",
+        "vendors/chunks/mermaid.esm.min/*",
+        "assets/icon.svg",
+        "mermaid-page.js"
+      ],
       "matches": ["https://*.atlassian.net/*"]
     }
   ],
